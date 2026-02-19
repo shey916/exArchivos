@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -35,12 +36,14 @@ namespace exArchivos
             listView1.Columns.Add("Última modificación", 160);
 
             listView1.DoubleClick += ListView1_DoubleClick;
+            listView1.SelectedIndexChanged += ListView1_SelectedIndexChanged;
             btnSeleccionarCarpeta.Click += BtnSeleccionarCarpeta_Click;
             btnRegresar.Click += BtnRegresar_Click;
             btnCargarSubcarpetas.Click += BtnCargarSubcarpetas_Click;
 
             // Inicialmente deshabilitar regresar
             btnRegresar.Enabled = false;
+            panelDetalles.Visible = false;
         }
 
         private void BtnSeleccionarCarpeta_Click(object? sender, EventArgs e)
@@ -131,6 +134,89 @@ namespace exArchivos
                     MessageBox.Show($"No se pudo abrir el archivo:\r\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
+        }
+
+        private void ListView1_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            if (listView1.SelectedItems.Count == 0)
+            {
+                panelDetalles.Visible = false;
+                return;
+            }
+
+            var sel = listView1.SelectedItems[0];
+            panelDetalles.Visible = true;
+
+            if (sel.Tag is DirectoryInfo dir)
+            {
+                MostrarDetallesCarpeta(dir);
+            }
+            else if (sel.Tag is FileInfo file)
+            {
+                MostrarDetallesArchivo(file);
+            }
+        }
+
+        private void MostrarDetallesCarpeta(DirectoryInfo dir)
+        {
+            lblNombreCompleto.Text = $"Nombre: {dir.FullName}";
+            lblTipo.Text = "Tipo: Carpeta";
+            lblExtension.Text = "Extensión: N/A";
+
+            try
+            {
+                var subdirs = dir.GetDirectories().Length;
+                var files = dir.GetFiles().Length;
+                lblCantidad.Text = $"Contenido: {subdirs} carpeta(s), {files} archivo(s)";
+
+                // Calcular tamaño total (puede ser lento en carpetas grandes)
+                long totalSize = 0;
+                try
+                {
+                    totalSize = CalcularTamanioCarpeta(dir);
+                    lblTamanio.Text = $"Tamaño: {FormatSize(totalSize)}";
+                }
+                catch
+                {
+                    lblTamanio.Text = "Tamaño: No disponible";
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                lblCantidad.Text = "Contenido: Acceso denegado";
+                lblTamanio.Text = "Tamaño: No disponible";
+            }
+        }
+
+        private void MostrarDetallesArchivo(FileInfo file)
+        {
+            lblNombreCompleto.Text = $"Nombre: {file.FullName}";
+            lblTipo.Text = $"Tipo: {GetTypeDescription(file.FullName) ?? "Archivo"}";
+            lblExtension.Text = $"Extensión: {(string.IsNullOrEmpty(file.Extension) ? "Sin extensión" : file.Extension)}";
+            lblTamanio.Text = $"Tamaño: {FormatSize(file.Length)}";
+            lblCantidad.Text = ""; // No aplica para archivos
+        }
+
+        private long CalcularTamanioCarpeta(DirectoryInfo dir)
+        {
+            long size = 0;
+            try
+            {
+                foreach (var file in dir.GetFiles())
+                {
+                    size += file.Length;
+                }
+
+                foreach (var subdir in dir.GetDirectories())
+                {
+                    size += CalcularTamanioCarpeta(subdir);
+                }
+            }
+            catch
+            {
+                // Ignorar errores de acceso
+            }
+            return size;
         }
 
         private void NavigateTo(DirectoryInfo directory)
@@ -269,6 +355,7 @@ namespace exArchivos
                 return null;
             }
         }
+
         #endregion
     }
 }
