@@ -1,265 +1,296 @@
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics;
-using System.Drawing;
 using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using exArchivos.Services;
 
 namespace exArchivos
 {
     public partial class Form1 : Form
     {
-        private readonly ImageList _smallIcons;
-        private readonly Dictionary<string, int> _iconIndexCache = new();
-        private DirectoryInfo _currentDirectory;
+        private readonly SystemIconProvider _iconProvider;
+        private readonly DirectoryNavigator _navigator;
+
+        private const string SelectFolderMessage = "Seleccione primero una carpeta con 'Seleccionar carpeta...'";
+        private const string AccessDeniedMessage = "No tiene permiso para listar algunas carpetas.";
+        private const string CannotOpenFileMessage = "No se pudo abrir el archivo:\r\n{0}";
+        private const string SelectFolderTitle = "Seleccione una carpeta raíz";
+        private const string ErrorTitle = "Error";
+        private const string WarningTitle = "Aviso";
+
+        private const int ColumnNameWidth = 350;
+        private const int ColumnTypeWidth = 150;
+        private const int ColumnSizeWidth = 100;
+        private const int ColumnDateWidth = 160;
 
         public Form1()
         {
             InitializeComponent();
 
-            _smallIcons = new ImageList
-            {
-                ColorDepth = ColorDepth.Depth32Bit,
-                ImageSize = new Size(16, 16)
-            };
+            _iconProvider = new SystemIconProvider(new ImageList());
+            _navigator = new DirectoryNavigator();
 
-            listView1.SmallImageList = _smallIcons;
+            InitializeListView();
+            SubscribeToEvents();
+            InitializeControls();
+        }
+
+        private void InitializeListView()
+        {
+            listView1.SmallImageList = _iconProvider.ImageList;
             listView1.View = View.Details;
             listView1.FullRowSelect = true;
+
+            ConfigureListViewColumns();
+        }
+
+        private void ConfigureListViewColumns()
+        {
             listView1.Columns.Clear();
-            listView1.Columns.Add("Nombre", 350);
-            listView1.Columns.Add("Tipo", 150);
-            listView1.Columns.Add("Tamaño", 100);
-            listView1.Columns.Add("Última modificación", 160);
+            listView1.Columns.Add("Nombre", ColumnNameWidth);
+            listView1.Columns.Add("Tipo", ColumnTypeWidth);
+            listView1.Columns.Add("Tamaño", ColumnSizeWidth);
+            listView1.Columns.Add("Última modificación", ColumnDateWidth);
+        }
 
-            listView1.DoubleClick += ListView1_DoubleClick;
-            listView1.SelectedIndexChanged += ListView1_SelectedIndexChanged;
-            btnSeleccionarCarpeta.Click += BtnSeleccionarCarpeta_Click;
-            btnRegresar.Click += BtnRegresar_Click;
-            btnCargarSubcarpetas.Click += BtnCargarSubcarpetas_Click;
+        private void SubscribeToEvents()
+        {
+            listView1.DoubleClick += OnListViewDoubleClick;
+            listView1.SelectedIndexChanged += OnListViewSelectionChanged;
+            btnSeleccionarCarpeta.Click += OnSelectFolderClick;
+            btnRegresar.Click += OnNavigateBackClick;
+            btnCargarSubcarpetas.Click += OnLoadSubfoldersClick;
+            _navigator.DirectoryChanged += OnDirectoryChanged;
+            FormClosing += OnFormClosing;
+        }
 
-            // Inicialmente deshabilitar regresar
+        private void InitializeControls()
+        {
             btnRegresar.Enabled = false;
             panelDetalles.Visible = false;
         }
 
-        private void BtnSeleccionarCarpeta_Click(object? sender, EventArgs e)
+        private void OnFormClosing(object? sender, FormClosingEventArgs e)
         {
-            using var dlg = new FolderBrowserDialog
+            _iconProvider?.Dispose();
+        }
+
+        private void OnSelectFolderClick(object? sender, EventArgs e)
+        {
+            var selectedPath = ShowFolderSelectionDialog();
+
+            if (string.IsNullOrEmpty(selectedPath))
+                return;
+
+            NavigateToPath(selectedPath);
+        }
+
+        private string? ShowFolderSelectionDialog()
+        {
+            using var dialog = new FolderBrowserDialog
             {
-                Description = "Seleccione una carpeta raíz",
+                Description = SelectFolderTitle,
                 UseDescriptionForTitle = true,
                 ShowNewFolderButton = false
             };
 
-            if (dlg.ShowDialog() != DialogResult.OK)
-                return;
-
-            txtRutaInicial.Text = dlg.SelectedPath;
-            NavigateTo(new DirectoryInfo(dlg.SelectedPath));
-            btnRegresar.Enabled = _currentDirectory?.Parent != null;
+            return dialog.ShowDialog() == DialogResult.OK
+                ? dialog.SelectedPath
+                : null;
         }
 
-        private void BtnCargarSubcarpetas_Click(object? sender, EventArgs e)
+        private void NavigateToPath(string path)
         {
-            // Cargar las carpetas del directorio actual (si hay)
-            if (_currentDirectory == null)
-            {
-                MessageBox.Show("Seleccione primero una carpeta con 'Seleccionar carpeta...'", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
+            txtRutaInicial.Text = path;
+            _navigator.NavigateTo(new DirectoryInfo(path));
+        }
 
-            listView1.Items.Clear();
-            _iconIndexCache.Clear();
-            _smallIcons.Images.Clear();
+        private void OnLoadSubfoldersClick(object? sender, EventArgs e)
+        {
+            if (!ValidateCurrentDirectory())
+                return;
+
+            LoadSubdirectories(_navigator.CurrentDirectory!);
+        }
+
+        private bool ValidateCurrentDirectory()
+        {
+            if (_navigator.CurrentDirectory != null)
+                return true;
+
+            MessageBox.Show(SelectFolderMessage, WarningTitle,
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        private void LoadSubdirectories(DirectoryInfo directory)
+        {
+            ClearListView();
 
             try
             {
-                foreach (var dir in _currentDirectory.GetDirectories())
+                foreach (var subdirectory in directory.GetDirectories())
                 {
-                    var item = new ListViewItem(dir.Name) { Tag = dir };
-                    item.SubItems.Add("Carpeta");
-                    item.SubItems.Add(""); // tamaño vacío para carpetas
-                    item.SubItems.Add(dir.LastWriteTime.ToString("g"));
-                    item.ImageIndex = EnsureIconIndexForPath(dir.FullName, true);
-                    listView1.Items.Add(item);
+                    AddDirectoryItem(subdirectory);
                 }
             }
             catch (UnauthorizedAccessException)
             {
-                MessageBox.Show("No tiene permiso para listar algunas carpetas.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowAccessDeniedWarning();
             }
         }
 
-        private void BtnRegresar_Click(object? sender, EventArgs e)
+        private void OnNavigateBackClick(object? sender, EventArgs e)
         {
-            if (_currentDirectory == null)
+            _navigator.TryNavigateUp();
+        }
+
+        private void OnListViewDoubleClick(object? sender, EventArgs e)
+        {
+            if (!TryGetSelectedItem(out var selectedItem))
                 return;
 
-            var parent = _currentDirectory.Parent;
-            if (parent != null)
+            HandleItemDoubleClick(selectedItem);
+        }
+
+        private bool TryGetSelectedItem(out ListViewItem? item)
+        {
+            item = listView1.SelectedItems.Count > 0
+                ? listView1.SelectedItems[0]
+                : null;
+
+            return item != null;
+        }
+
+        private void HandleItemDoubleClick(ListViewItem item)
+        {
+            switch (item.Tag)
             {
-                NavigateTo(parent);
-                btnRegresar.Enabled = _currentDirectory.Parent != null;
+                case DirectoryInfo directory:
+                    _navigator.NavigateTo(directory);
+                    break;
+                case FileInfo file:
+                    OpenFile(file);
+                    break;
             }
         }
 
-        private void ListView1_DoubleClick(object? sender, EventArgs e)
+        private void OpenFile(FileInfo file)
         {
-            if (listView1.SelectedItems.Count == 0) return;
-
-            var sel = listView1.SelectedItems[0];
-            if (sel.Tag is DirectoryInfo dir)
+            try
             {
-                // navegar a la carpeta
-                NavigateTo(dir);
-                btnRegresar.Enabled = _currentDirectory.Parent != null;
+                var startInfo = new ProcessStartInfo(file.FullName)
+                {
+                    UseShellExecute = true
+                };
+                Process.Start(startInfo);
             }
-            else if (sel.Tag is FileInfo file)
+            catch (Exception ex)
             {
-                try
-                {
-                    // Abrir con la aplicación por defecto
-                    var psi = new ProcessStartInfo(file.FullName)
-                    {
-                        UseShellExecute = true
-                    };
-                    Process.Start(psi);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"No se pudo abrir el archivo:\r\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                ShowFileOpenError(ex.Message);
             }
         }
 
-        private void ListView1_SelectedIndexChanged(object? sender, EventArgs e)
+        private void OnListViewSelectionChanged(object? sender, EventArgs e)
         {
-            if (listView1.SelectedItems.Count == 0)
+            if (!TryGetSelectedItem(out var selectedItem))
             {
-                panelDetalles.Visible = false;
+                HideDetailsPanel();
                 return;
             }
 
-            var sel = listView1.SelectedItems[0];
+            ShowItemDetails(selectedItem!);
+        }
+
+        private void ShowItemDetails(ListViewItem item)
+        {
             panelDetalles.Visible = true;
 
-            if (sel.Tag is DirectoryInfo dir)
+            switch (item.Tag)
             {
-                MostrarDetallesCarpeta(dir);
-            }
-            else if (sel.Tag is FileInfo file)
-            {
-                MostrarDetallesArchivo(file);
+                case DirectoryInfo directory:
+                    DisplayDirectoryDetails(directory);
+                    break;
+                case FileInfo file:
+                    DisplayFileDetails(file);
+                    break;
             }
         }
 
-        private void MostrarDetallesCarpeta(DirectoryInfo dir)
+        private void DisplayDirectoryDetails(DirectoryInfo directory)
         {
-            lblNombreCompleto.Text = $"Nombre: {dir.FullName}";
+            lblNombreCompleto.Text = $"Nombre: {directory.FullName}";
             lblTipo.Text = "Tipo: Carpeta";
             lblExtension.Text = "Extensión: N/A";
 
             try
             {
-                var subdirs = dir.GetDirectories().Length;
-                var files = dir.GetFiles().Length;
-                lblCantidad.Text = $"Contenido: {subdirs} carpeta(s), {files} archivo(s)";
+                var (subdirectoryCount, fileCount) = CountDirectoryContents(directory);
+                lblCantidad.Text = $"Contenido: {subdirectoryCount} carpeta(s), {fileCount} archivo(s)";
 
-                // Calcular tamaño total (puede ser lento en carpetas grandes)
-                long totalSize = 0;
-                try
-                {
-                    totalSize = CalcularTamanioCarpeta(dir);
-                    lblTamanio.Text = $"Tamaño: {FormatSize(totalSize)}";
-                }
-                catch
-                {
-                    lblTamanio.Text = "Tamaño: No disponible";
-                }
+                var totalSize = DirectorySizeCalculator.Calculate(directory);
+                lblTamanio.Text = $"Tamaño: {FileSizeFormatter.Format(totalSize)}";
             }
             catch (UnauthorizedAccessException)
             {
-                lblCantidad.Text = "Contenido: Acceso denegado";
-                lblTamanio.Text = "Tamaño: No disponible";
+                DisplayAccessDeniedDetails();
             }
         }
 
-        private void MostrarDetallesArchivo(FileInfo file)
+        private (int subdirectories, int files) CountDirectoryContents(DirectoryInfo directory)
+        {
+            var subdirectoryCount = directory.GetDirectories().Length;
+            var fileCount = directory.GetFiles().Length;
+            return (subdirectoryCount, fileCount);
+        }
+
+        private void DisplayFileDetails(FileInfo file)
         {
             lblNombreCompleto.Text = $"Nombre: {file.FullName}";
-            lblTipo.Text = $"Tipo: {GetTypeDescription(file.FullName) ?? "Archivo"}";
-            lblExtension.Text = $"Extensión: {(string.IsNullOrEmpty(file.Extension) ? "Sin extensión" : file.Extension)}";
-            lblTamanio.Text = $"Tamaño: {FormatSize(file.Length)}";
-            lblCantidad.Text = ""; // No aplica para archivos
+            lblTipo.Text = $"Tipo: {FileTypeProvider.GetTypeDescription(file.FullName)}";
+            lblExtension.Text = $"Extensión: {GetFileExtensionDisplay(file)}";
+            lblTamanio.Text = $"Tamaño: {FileSizeFormatter.Format(file.Length)}";
+            lblCantidad.Text = string.Empty;
         }
 
-        private long CalcularTamanioCarpeta(DirectoryInfo dir)
+        private static string GetFileExtensionDisplay(FileInfo file)
         {
-            long size = 0;
-            try
-            {
-                foreach (var file in dir.GetFiles())
-                {
-                    size += file.Length;
-                }
-
-                foreach (var subdir in dir.GetDirectories())
-                {
-                    size += CalcularTamanioCarpeta(subdir);
-                }
-            }
-            catch
-            {
-                // Ignorar errores de acceso
-            }
-            return size;
+            return string.IsNullOrEmpty(file.Extension)
+                ? "Sin extensión"
+                : file.Extension;
         }
 
-        private void NavigateTo(DirectoryInfo directory)
+        private void DisplayAccessDeniedDetails()
         {
-            _currentDirectory = directory;
-            txtRutaInicial.Text = directory.FullName;
-            PopulateListView(directory);
+            lblCantidad.Text = "Contenido: Acceso denegado";
+            lblTamanio.Text = "Tamaño: No disponible";
+        }
+
+        private void OnDirectoryChanged(object? sender, DirectoryChangedEventArgs e)
+        {
+            txtRutaInicial.Text = e.Directory.FullName;
+            PopulateListView(e.Directory);
+            UpdateNavigationButtons();
+        }
+
+        private void UpdateNavigationButtons()
+        {
+            btnRegresar.Enabled = _navigator.CanNavigateUp;
         }
 
         private void PopulateListView(DirectoryInfo directory)
         {
             listView1.BeginUpdate();
-            listView1.Items.Clear();
-            _iconIndexCache.Clear();
-            _smallIcons.Images.Clear();
+            ClearListView();
 
             try
             {
-                // Primero carpetas
-                foreach (var dir in directory.GetDirectories())
-                {
-                    var lvi = new ListViewItem(dir.Name) { Tag = dir };
-                    lvi.SubItems.Add("Carpeta");
-                    lvi.SubItems.Add("");
-                    lvi.SubItems.Add(dir.LastWriteTime.ToString("g"));
-                    lvi.ImageIndex = EnsureIconIndexForPath(dir.FullName, true);
-                    listView1.Items.Add(lvi);
-                }
-
-                // Luego archivos
-                foreach (var file in directory.GetFiles())
-                {
-                    var lvi = new ListViewItem(file.Name) { Tag = file };
-                    lvi.SubItems.Add(GetTypeDescription(file.FullName) ?? file.Extension);
-                    lvi.SubItems.Add(FormatSize(file.Length));
-                    lvi.SubItems.Add(file.LastWriteTime.ToString("g"));
-                    lvi.ImageIndex = EnsureIconIndexForPath(file.FullName, false);
-                    listView1.Items.Add(lvi);
-                }
+                LoadDirectoriesIntoListView(directory);
+                LoadFilesIntoListView(directory);
             }
             catch (UnauthorizedAccessException)
             {
-                MessageBox.Show("Acceso denegado a alguna entrada dentro de la carpeta.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowAccessDeniedWarning();
             }
             finally
             {
@@ -267,95 +298,70 @@ namespace exArchivos
             }
         }
 
-        private int EnsureIconIndexForPath(string path, bool isDirectory)
+        private void LoadDirectoriesIntoListView(DirectoryInfo directory)
         {
-            var key = isDirectory ? "__FOLDER__" : Path.GetExtension(path).ToLowerInvariant();
-            if (string.IsNullOrEmpty(key)) key = path.ToLowerInvariant();
-
-            if (_iconIndexCache.TryGetValue(key, out var idx))
-                return idx;
-
-            var icon = GetSystemIcon(path, isDirectory, small: true) ?? SystemIcons.WinLogo;
-            _smallIcons.Images.Add(icon);
-            idx = _smallIcons.Images.Count - 1;
-            _iconIndexCache[key] = idx;
-            return idx;
-        }
-
-        private static string FormatSize(long bytes)
-        {
-            const long kilo = 1024;
-            const long mega = kilo * 1024;
-            const long giga = mega * 1024;
-
-            if (bytes >= giga) return $"{bytes / (double)giga:0.##} GB";
-            if (bytes >= mega) return $"{bytes / (double)mega:0.##} MB";
-            if (bytes >= kilo) return $"{bytes / (double)kilo:0.##} KB";
-            return $"{bytes} B";
-        }
-
-        #region Interop para iconos y tipo
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct SHFILEINFO
-        {
-            public IntPtr hIcon;
-            public int iIcon;
-            public uint dwAttributes;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-            public string szDisplayName;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
-            public string szTypeName;
-        }
-
-        private const uint SHGFI_ICON = 0x000000100;
-        private const uint SHGFI_SMALLICON = 0x000000001;
-        private const uint SHGFI_TYPENAME = 0x000000400;
-        private const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
-        private const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
-        private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
-
-        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-        private static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
-
-        private static Icon? GetSystemIcon(string path, bool isDirectory, bool small)
-        {
-            try
+            foreach (var subdirectory in directory.GetDirectories())
             {
-                var shfi = new SHFILEINFO();
-                var flags = SHGFI_ICON | (small ? SHGFI_SMALLICON : 0) | SHGFI_USEFILEATTRIBUTES;
-                var attr = isDirectory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-                var res = SHGetFileInfo(path, attr, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
-                if (shfi.hIcon == IntPtr.Zero) return null;
-                var icon = Icon.FromHandle(shfi.hIcon).Clone() as Icon;
-                DestroyIcon(shfi.hIcon);
-                return icon;
-            }
-            catch
-            {
-                return null;
+                AddDirectoryItem(subdirectory);
             }
         }
 
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool DestroyIcon(IntPtr hIcon);
-
-        private static string? GetTypeDescription(string path)
+        private void LoadFilesIntoListView(DirectoryInfo directory)
         {
-            try
+            foreach (var file in directory.GetFiles())
             {
-                var shfi = new SHFILEINFO();
-                var flags = SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES;
-                var attr = Path.HasExtension(path) ? FILE_ATTRIBUTE_NORMAL : FILE_ATTRIBUTE_DIRECTORY;
-                SHGetFileInfo(path, attr, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
-                return string.IsNullOrWhiteSpace(shfi.szTypeName) ? null : shfi.szTypeName;
-            }
-            catch
-            {
-                return null;
+                AddFileItem(file);
             }
         }
 
-        #endregion
+        private void AddDirectoryItem(DirectoryInfo directory)
+        {
+            var item = CreateListViewItem(directory.Name, directory);
+            item.SubItems.Add("Carpeta");
+            item.SubItems.Add(string.Empty);
+            item.SubItems.Add(directory.LastWriteTime.ToString("g"));
+            item.ImageIndex = _iconProvider.GetIconIndex(directory.FullName, isDirectory: true);
+
+            listView1.Items.Add(item);
+        }
+
+        private void AddFileItem(FileInfo file)
+        {
+            var item = CreateListViewItem(file.Name, file);
+            item.SubItems.Add(FileTypeProvider.GetTypeDescription(file.FullName));
+            item.SubItems.Add(FileSizeFormatter.Format(file.Length));
+            item.SubItems.Add(file.LastWriteTime.ToString("g"));
+            item.ImageIndex = _iconProvider.GetIconIndex(file.FullName, isDirectory: false);
+
+            listView1.Items.Add(item);
+        }
+
+        private static ListViewItem CreateListViewItem(string text, object tag)
+        {
+            return new ListViewItem(text) { Tag = tag };
+        }
+
+        private void ClearListView()
+        {
+            listView1.Items.Clear();
+            _iconProvider.ClearCache();
+        }
+
+        private void HideDetailsPanel()
+        {
+            panelDetalles.Visible = false;
+        }
+
+        private void ShowAccessDeniedWarning()
+        {
+            MessageBox.Show(AccessDeniedMessage, WarningTitle,
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private void ShowFileOpenError(string errorMessage)
+        {
+            MessageBox.Show(string.Format(CannotOpenFileMessage, errorMessage),
+                ErrorTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 }

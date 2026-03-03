@@ -125,7 +125,7 @@
             // 
             // lblTipo
             // 
-            lblTipo.Location = new Point(8, 58);
+            lblTipo.Location = new Point(8, 68);
             lblTipo.Name = "lblTipo";
             lblTipo.Size = new Size(170, 20);
             lblTipo.TabIndex = 1;
@@ -159,16 +159,16 @@
 
         #endregion
 
-        private System.Windows.Forms.ListView listView1;
-        private System.Windows.Forms.Button btnSeleccionarCarpeta;
-        private System.Windows.Forms.Button btnRegresar;
-        private System.Windows.Forms.TextBox txtRutaInicial;
-        private System.Windows.Forms.Button btnCargarSubcarpetas;
-        private System.Windows.Forms.Panel panelDetalles;
-        private System.Windows.Forms.Label lblNombreCompleto;
-        private System.Windows.Forms.Label lblTipo;
-        private System.Windows.Forms.Label lblExtension;
-        private System.Windows.Forms.Label lblTamanio;
-        private System.Windows.Forms.Label lblCantidad;
+        private ListView listView1;
+        private Button btnSeleccionarCarpeta;
+        private Button btnRegresar;
+        private TextBox txtRutaInicial;
+        private Button btnCargarSubcarpetas;
+        private Panel panelDetalles;
+        private Label lblNombreCompleto;
+        private Label lblTipo;
+        private Label lblExtension;
+        private Label lblTamanio;
+        private Label lblCantidad;
     }
 }
